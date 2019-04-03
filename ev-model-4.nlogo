@@ -5,7 +5,13 @@ areas-own[next-location current-queue charging-taxi]
 taxis-own[current-location destination route next-area state battery] ;state will contain a string "available" "hired" or "charging" "queuing"
 
 
-globals[temp-destination dist full-charge]
+globals[
+  morning-peak-areas
+  evening-peak-areas
+  temp-destination
+  dist
+  full-charge
+]
 
 extensions [csv array table]
 
@@ -31,13 +37,27 @@ to go
       ifelse battery > low-battery-threshold
       [ ; battery above the threshold, getting hired
         if random 100 < hire-probability[
-          set destination ([who] of one-of areas) ;randomise goal-destination ([who] of a random area)
+          if time-of-day = "None" [
+            set destination ([who] of one-of areas) ;randomise goal-destination ([who] of a random area)
+          ]
+
+          if time-of-day = "Morning Peak" [
+            ifelse random-float 1 < 0.7 [
+              set destination one-of morning-peak-areas
+            ] [set destination ([who] of one-of areas)]
+          ]
+
+          if time-of-day = "Evening Peak" [
+            ifelse random-float 1 < 0.7 [
+              set destination one-of evening-peak-areas
+            ] [set destination ([who] of one-of areas)]
+          ]
+
           ; TODO: set the route to the goal-destination using a* (current-location, goal-destination)
           ;set route a-star[current-location][destination]
           set route (a-star current-location destination)
 ;          show "getting hired"
-          set state "hired"
-          set label state
+          set-taxi-state "hired"
 ;          show state
         ]
       ]
@@ -45,8 +65,7 @@ to go
         let current-area one-of areas-on self
         let current-taxi self
         ask current-area [ set current-queue insert-item (length current-queue) current-queue current-taxi ]
-        set state "queuing"
-        set label state
+        set-taxi-state "queuing"
       ]
 
     ]
@@ -61,7 +80,7 @@ to go
         let y-cor [ycor] of next-area
         fd 1
         set battery battery - battery-consumption-rate
-        ifelse battery < 0 [ set color black set state "breakdown" set label state] [
+        ifelse battery < 0 [ set color black set-taxi-state "breakdown"] [
           if round(xcor) = x-cor and round(ycor) = y-cor[
           set route remove-item 0 route setxy x-cor y-cor
           set current-location ([who] of next-area)
@@ -72,8 +91,7 @@ to go
 
       ]
       [ ; if taxi reached the goal-destination, change state to "available"
-        set state "available"
-        set label state
+        set-taxi-state "available"
       ]
     ]
   ]
@@ -91,15 +109,13 @@ to go
       x -> ask x [
         ifelse full-charge - battery <= charge-rate
         [
-          set state "available"
-          set label state
+          set-taxi-state "available"
           set battery full-charge
           ask current-area[set current-queue remove x current-queue]
 ;          show battery
         ]
         [
-          set state "charging"
-          set label state
+          set-taxi-state "charging"
           set battery battery + charge-rate
 ;          show battery
         ]
@@ -111,12 +127,14 @@ end
 
 to setup-areas
   create-areas 39 ;;39 areas in this world given 39 districts
-  ask areas [set color red set size 1.5 set shape "square" set label who set current-queue [] ]
+  ask areas [set current-queue [] set color grey set size 2.2 set shape "square" if labels? [set label who ]]
   ;; sets the areas according to their respective coordinates derived from the excel sheet
   file-open "coordinates.csv"
   let data csv:from-file "coordinates.csv"
   (foreach data [
     [lst] -> ask area item 0 lst [setxy item 1 lst item 2 lst]])
+  set morning-peak-areas [5 6 7 8 9 10 16 17 18 19 20]
+  set evening-peak-areas [0 1 2 3 4 11 12 13 14 15 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38]
 end
 
 to setup-link
@@ -133,13 +151,22 @@ to setup-taxis
   create-taxis num-taxis [
     let temp-area one-of areas
     set color green
-    set size 2.5
+    set size 3
     move-to temp-area
     set battery battery-capacity
-    set state "available"
-    set label state
+    set-taxi-state "available"
     set current-location ([who] of temp-area)
   ]
+end
+
+to set-taxi-state [taxi-state]
+  set state taxi-state
+  if labels? [set label state]
+  if taxi-state = "available" [set color green]
+  if taxi-state = "hired" [set color violet]
+  if taxi-state = "breakdown" [set color black]
+  if taxi-state = "waiting" [set color red]
+  if taxi-state = "charging" [set color blue]
 end
 
 to-report a-star [start goal]
@@ -240,16 +267,15 @@ to-report calculate-h [start-node end-node]
   report h-value
 end
 
-
 @#$#@#$#@
 GRAPHICS-WINDOW
-920
-13
-1573
-386
+299
+16
+937
+381
 -1
 -1
-6.39
+5.604
 1
 10
 1
@@ -270,11 +296,11 @@ ticks
 30.0
 
 BUTTON
+19
 17
-27
-83
-60
-NIL
+115
+51
+Setup Map
 setup
 NIL
 1
@@ -287,11 +313,11 @@ NIL
 1
 
 BUTTON
-101
-28
-164
-61
-NIL
+127
+17
+192
+51
+Go
 go
 NIL
 1
@@ -304,15 +330,30 @@ NIL
 1
 
 SLIDER
-16
-79
-289
-112
+18
+93
+291
+126
 num-taxis
 num-taxis
 0
 3000
-2010.0
+1.0
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+18
+166
+291
+199
+battery-capacity
+battery-capacity
+0
+500
+100.0
 1
 1
 NIL
@@ -320,39 +361,24 @@ HORIZONTAL
 
 SLIDER
 16
-165
-289
-198
-battery-capacity
-battery-capacity
+203
+290
+236
+low-battery-threshold
+low-battery-threshold
 0
 500
-500.0
+90.0
 1
 1
 NIL
 HORIZONTAL
 
 SLIDER
-14
-211
-288
-244
-low-battery-threshold
-low-battery-threshold
-0
-500
-154.0
-1
-1
-NIL
-HORIZONTAL
-
-SLIDER
-16
-124
-288
-157
+18
+129
+290
+162
 hire-probability
 hire-probability
 0
@@ -364,41 +390,41 @@ hire-probability
 HORIZONTAL
 
 SLIDER
-14
-256
-289
-289
+16
+238
+291
+271
 charge-rate
 charge-rate
 0
 100
-20.0
+5.0
 1
 1
 NIL
 HORIZONTAL
 
 SLIDER
-14
-299
-289
-332
+16
+274
+291
+307
 num-charging-stations-per-area
 num-charging-stations-per-area
 0
 20
-2.0
+1.0
 1
 1
 NIL
 HORIZONTAL
 
 BUTTON
-180
-29
-243
-62
-go
+192
+17
+292
+51
+Go Forever
 go
 T
 1
@@ -411,10 +437,10 @@ NIL
 1
 
 SLIDER
-14
-341
-289
-374
+15
+310
+290
+343
 battery-consumption-rate
 battery-consumption-rate
 0
@@ -426,55 +452,55 @@ NIL
 HORIZONTAL
 
 MONITOR
-460
-215
-573
-260
-Available Count
+710
+609
+790
+654
+Available
 count taxis with [state = \"available\"]
 17
 1
 11
 
 MONITOR
-585
-217
-674
-262
-Hired Count
+789
+609
+878
+654
+Hired
 count taxis with [state = \"hired\"]
 17
 1
 11
 
 MONITOR
-682
-217
-791
-262
-Queuing Count
+878
+609
+972
+655
+Queuing
 count taxis with [state = \"queuing\"]
 17
 1
 11
 
 MONITOR
-798
-217
-911
-262
-Charging Count
+972
+609
+1070
+655
+Charging
 count taxis with [state = \"charging\"]
 17
 1
 11
 
 PLOT
-458
-13
-911
-207
-Plot of Taxis' State Count
+710
+395
+1258
+611
+Number of Taxis by State
 Time
 Count
 0.0
@@ -486,15 +512,16 @@ true
 "" ""
 PENS
 "available taxis" 1.0 0 -13840069 true "plot count taxis with [state = \"available\"]" "plot count taxis with [state = \"available\"]"
-"hired taxis" 1.0 0 -16710398 true "plot count taxis with [state = \"available\"]" "plot count taxis with [state = \"hired\"]"
+"hired taxis" 1.0 0 -8630108 true "plot count taxis with [state = \"available\"]" "plot count taxis with [state = \"hired\"]"
 "queuing taxis" 1.0 0 -2674135 true "plot count taxis with [state = \"available\"]" "plot count taxis with [state = \"queuing\"]"
 "charging taxis" 1.0 0 -13791810 true "plot count taxis with [state = \"available\"]" "plot count taxis with [state = \"charging\"]"
+"breakdown taxis" 1.0 0 -16777216 true "" "plot count taxis with [state = \"breakdown\"]"
 
 SLIDER
-14
-385
-292
-418
+15
+346
+289
+379
 charging-completion-threshold
 charging-completion-threshold
 0
@@ -506,34 +533,250 @@ charging-completion-threshold
 HORIZONTAL
 
 MONITOR
-458
-273
-665
-318
-Average Battery Charge
+955
+17
+1262
+63
+Overall Average Battery Charge
 mean [battery] of taxis
 2
 1
 11
 
 MONITOR
-788
-268
-910
-313
-Breakdown Count
+1069
+609
+1163
+655
+Breakdown
 count taxis with [state = \"breakdown\"]
 17
 1
 11
 
 MONITOR
-457
-331
-719
-376
-Mean Queue Length
+955
+198
+1260
+244
+Overall Average Queue Length
 mean ([length current-queue] of areas)
+2
+1
+11
+
+CHOOSER
+14
+395
+705
+440
+time-of-day
+time-of-day
+"None" "Morning Peak" "Evening Peak"
+0
+
+SWITCH
+18
+58
+292
+92
+labels?
+labels?
+1
+1
+-1000
+
+MONITOR
+14
+443
+169
+488
+Number of Taxis (CBD)
+count taxis with [member? current-location morning-peak-areas]
+2
+1
+11
+
+MONITOR
+169
+443
+333
+488
+Number of Taxis (Non-CBD)
+count taxis with [member? current-location evening-peak-areas]
+17
+1
+11
+
+MONITOR
+340
+443
+510
+488
+Average Queue Length (CBD)
+mean ([length current-queue] of areas with [member? who morning-peak-areas])
+2
+1
+11
+
+MONITOR
+509
+443
+705
+488
+Average Queue Length (Non-CBD)
+mean ([length current-queue] of areas with [member? who evening-peak-areas])
+2
+1
+11
+
+PLOT
+14
+488
+334
+698
+Number of Taxis in CBD vs. Non-CBD
+NIL
+NIL
+0.0
+10.0
+0.0
+10.0
+true
+true
+"" ""
+PENS
+"CBD" 1.0 0 -955883 true "plot count taxis with [member? current-location morning-peak-areas]" "plot count taxis with [member? current-location morning-peak-areas]"
+"Non-CBD" 1.0 0 -13791810 true "plot count taxis with [member? current-location evening-peak-areas]" "plot count taxis with [member? current-location evening-peak-areas]"
+
+PLOT
+340
+487
+706
+699
+Average Queue Length in CBD vs. Non-CBD
+NIL
+NIL
+0.0
+10.0
+0.0
+10.0
+true
+true
+"" ""
+PENS
+"CBD" 1.0 0 -955883 true "if (count taxis with [state = \"queuing\"] > 0) [plot mean ([length current-queue] of areas with [member? who morning-peak-areas])]" "if (count taxis with [state = \"queuing\"] > 0) [plot mean ([length current-queue] of areas with [member? who morning-peak-areas])]"
+"Non-CBD" 1.0 0 -14454117 true "if (count taxis with [state = \"queuing\"] > 0) [plot mean ([length current-queue] of areas with [member? who evening-peak-areas])]" "if (count taxis with [state = \"queuing\"] > 0) [plot mean ([length current-queue] of areas with [member? who evening-peak-areas])]"
+
+MONITOR
+710
+653
+790
+698
+% Available
+count taxis with [state = \"available\"] / num-taxis * 100
+2
+1
+11
+
+MONITOR
+789
+653
+879
+699
+% Hired
+count taxis with [state = \"hired\"] / num-taxis * 100
+2
+1
+11
+
+MONITOR
+878
+653
+972
+699
+% Queuing
+count taxis with [state = \"queuing\"] / num-taxis * 100
+2
+1
+11
+
+MONITOR
+970
+653
+1070
+699
+% Charging
+count taxis with [state = \"charging\"] / num-taxis * 100
+2
+1
+11
+
+MONITOR
+1069
+653
+1163
+699
+% Breakdown
+count taxis with [state = \"breakdown\"] / num-taxis * 100
+2
+1
+11
+
+PLOT
+955
+62
+1262
+192
+Overall Average Battery Charge Over Time
+NIL
+NIL
+0.0
+10.0
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"default" 1.0 0 -16777216 true "if not empty? [battery] of taxis [plot mean [battery] of taxis]" "if not empty? [battery] of taxis [plot mean [battery] of taxis]"
+
+PLOT
+955
+243
+1260
+379
+Overall Average Queue Length Over Time
+NIL
+NIL
+0.0
+10.0
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"default" 1.0 0 -16777216 true "if (count taxis with [state = \"queuing\"] > 0) [plot mean ([length current-queue] of areas)]" "if (count taxis with [state = \"queuing\"] > 0) [plot mean ([length current-queue] of areas)]"
+
+MONITOR
+1162
+608
+1259
+654
+Roaming
+99999
+2
+1
+11
+
+MONITOR
+1162
+653
+1259
+699
+% Roaming
+99999
 17
 1
 11
