@@ -2,7 +2,15 @@ breed[areas area]
 breed[taxis taxi]
 
 areas-own[next-location current-queue charging-taxi]
-taxis-own[current-location destination route next-area state battery] ;state will contain a string "available" "hired" or "charging" "queuing"
+taxis-own[
+  current-location
+  destination
+  route
+  next-area
+  state
+  battery
+  searching?
+] ;state will contain a string "available" "hired" or "charging" "queuing" or "roaming"
 
 
 globals[
@@ -26,16 +34,15 @@ end
 
 to go
   ask taxis[
-    ; if current position/patch is not on item 0 route, then move, else pop item 0 set next-destination item 0
-
-    ;Each area will have a queue
-    ; If available and below threshold, charge the vehicle. it will be naturally be in one of the square
-    ; joins the queue in the station
+    let current-taxi self ; current-taxi object
 
     ; Taxi is currently available and waiting for a passenger
-    if state = "available" [
+    if state = "available"[
+      ; Check battery threshold
       ifelse battery > low-battery-threshold
-      [ ; battery above the threshold, getting hired
+
+      ; Battery > threshold, getting hired
+      [
         if random 100 < hire-probability[
           if time-of-day = "None" [
             set destination ([who] of one-of areas) ;randomise goal-destination ([who] of a random area)
@@ -53,21 +60,98 @@ to go
             ] [set destination ([who] of one-of areas)]
           ]
 
-          ; TODO: set the route to the goal-destination using a* (current-location, goal-destination)
-          ;set route a-star[current-location][destination]
           set route (a-star current-location destination)
-;          show "getting hired"
           set-taxi-state "hired"
-;          show state
         ]
       ]
-      [ ; battery below the threshold, join the area queue to which it is on
-        let current-area one-of areas-on self
-        let current-taxi self
-        ask current-area [ set current-queue insert-item (length current-queue) current-queue current-taxi ]
-        set-taxi-state "queuing"
+
+      ; Battery < threshold, check queue length
+      [
+        ; Check battery level to see whether the car can roam
+        let cannot-roam (battery < (15 * battery-consumption-rate))
+;        show cannot-roam
+
+        ; Check the area where taxi is at
+        ask area current-location [
+          ; Check length of queue
+;          show (cannot-roam or (length current-queue > max-acceptable-queue-length))
+          ifelse (not roaming? or cannot-roam or (length current-queue < max-acceptable-queue-length))
+
+          ; If length < max-acceptable-queue-length -> join queue
+          [
+            set current-queue insert-item (length current-queue) current-queue current-taxi
+            ask current-taxi[set-taxi-state "queuing"]
+          ]
+
+          ; If length > max-acceptable-queue-length -> go to one of nearby areas, change state to "roaming"
+          [
+            let nearby-areas link-neighbors
+            ask current-taxi [
+              set-taxi-state "roaming"
+              let temp-route []
+              let next-area-code ([who] of one-of nearby-areas)
+              set temp-route lput next-area-code temp-route
+              set route temp-route
+            ]
+          ]
+        ]
+      ]
+    ]
+
+    ; State = "roaming" -> Taxi move to nearby area and check the queue there
+    if state = "roaming"[
+      ifelse not empty? route
+
+      ; If taxi has not reached the nearby area, continue to move
+      [
+        set next-area area item 0 route
+        set heading towards next-area
+        let x-cor [xcor] of next-area
+        let y-cor [ycor] of next-area
+        fd 1
+        set battery battery - battery-consumption-rate
+        ifelse battery < 0
+        [ set color black set-taxi-state "breakdown"]
+        [
+          if round(xcor) = x-cor and round(ycor) = y-cor
+          [
+            set route remove-item 0 route setxy x-cor y-cor
+            set current-location ([who] of next-area)
+          ]
+        ]
       ]
 
+      ; If taxi reached the nearby area -> Check queue at that area
+      [
+        ; Check battery level to see whether the car can roam
+        let cannot-roam (battery < (15 * battery-consumption-rate))
+;        show cannot-roam
+
+        ; Check the area where taxi is at
+        ask area current-location [
+          ; Check length of queue
+;          show (cannot-roam or (length current-queue > max-acceptable-queue-length))
+          ifelse (not roaming? or cannot-roam or (length current-queue < max-acceptable-queue-length))
+
+          ; If length < max-acceptable-queue-length -> join queue
+          [
+            set current-queue insert-item (length current-queue) current-queue current-taxi
+            ask current-taxi[set-taxi-state "queuing"]
+          ]
+
+          ; If length > max-acceptable-queue-length -> go to one of nearby areas, change state to "roaming"
+          [
+            let nearby-areas link-neighbors
+            ask current-taxi [
+              set-taxi-state "roaming"
+              let temp-route []
+              let next-area-code ([who] of one-of nearby-areas)
+              set temp-route lput next-area-code temp-route
+              set route temp-route
+            ]
+          ]
+        ]
+      ]
     ]
 
     ; Taxi being hired and en route to destination
@@ -80,15 +164,15 @@ to go
         let y-cor [ycor] of next-area
         fd 1
         set battery battery - battery-consumption-rate
-        ifelse battery < 0 [ set color black set-taxi-state "breakdown"] [
-          if round(xcor) = x-cor and round(ycor) = y-cor[
-          set route remove-item 0 route setxy x-cor y-cor
-          set current-location ([who] of next-area)
-;          show current-location
+        ifelse battery < 0
+        [ set color black set-taxi-state "breakdown"]
+        [
+          if round(xcor) = x-cor and round(ycor) = y-cor
+          [
+            set route remove-item 0 route setxy x-cor y-cor
+            set current-location ([who] of next-area)
           ]
         ]
-
-
       ]
       [ ; if taxi reached the goal-destination, change state to "available"
         set-taxi-state "available"
@@ -122,7 +206,9 @@ to go
       ]
     ]
   ]
+
   tick
+
 end
 
 to setup-areas
@@ -153,9 +239,10 @@ to setup-taxis
     set color green
     set size 3
     move-to temp-area
-    set battery battery-capacity
     set-taxi-state "available"
     set current-location ([who] of temp-area)
+    set searching? false
+    set battery ((battery-capacity * 0.5) + random (battery-capacity * 0.5))
   ]
 end
 
@@ -165,8 +252,9 @@ to set-taxi-state [taxi-state]
   if taxi-state = "available" [set color green]
   if taxi-state = "hired" [set color violet]
   if taxi-state = "breakdown" [set color black]
-  if taxi-state = "waiting" [set color red]
+  if taxi-state = "queuing" [set color red]
   if taxi-state = "charging" [set color blue]
+  if taxi-state = "roaming" [set color yellow]
 end
 
 to-report a-star [start goal]
@@ -270,11 +358,11 @@ end
 GRAPHICS-WINDOW
 299
 16
-938
-381
+996
+414
 -1
 -1
-6.25
+6.825
 1
 10
 1
@@ -337,7 +425,7 @@ num-taxis
 num-taxis
 0
 3000
-1.0
+1000.0
 1
 1
 NIL
@@ -352,7 +440,7 @@ battery-capacity
 battery-capacity
 0
 500
-100.0
+300.0
 1
 1
 NIL
@@ -367,7 +455,7 @@ low-battery-threshold
 low-battery-threshold
 0
 500
-90.0
+150.0
 1
 1
 NIL
@@ -382,7 +470,7 @@ hire-probability
 hire-probability
 0
 100
-70.0
+80.0
 1
 1
 %
@@ -397,7 +485,7 @@ charge-rate
 charge-rate
 0
 100
-5.0
+20.0
 1
 1
 NIL
@@ -444,7 +532,7 @@ battery-consumption-rate
 battery-consumption-rate
 0
 20
-1.0
+2.0
 1
 1
 NIL
@@ -452,9 +540,9 @@ HORIZONTAL
 
 MONITOR
 710
-609
-790
-654
+640
+797
+685
 Available
 count taxis with [state = \"available\"]
 17
@@ -462,10 +550,10 @@ count taxis with [state = \"available\"]
 11
 
 MONITOR
-789
-609
-878
-654
+797
+641
+894
+686
 Hired
 count taxis with [state = \"hired\"]
 17
@@ -473,10 +561,10 @@ count taxis with [state = \"hired\"]
 11
 
 MONITOR
-878
-609
-972
-654
+893
+640
+987
+685
 Queuing
 count taxis with [state = \"queuing\"]
 17
@@ -484,10 +572,10 @@ count taxis with [state = \"queuing\"]
 11
 
 MONITOR
-972
-609
-1070
-654
+987
+640
+1090
+685
 Charging
 count taxis with [state = \"charging\"]
 17
@@ -496,9 +584,9 @@ count taxis with [state = \"charging\"]
 
 PLOT
 710
-395
-1258
-611
+426
+1305
+642
 Number of Taxis by State
 Time
 Count
@@ -515,6 +603,7 @@ PENS
 "queuing taxis" 1.0 0 -2674135 true "plot count taxis with [state = \"available\"]" "plot count taxis with [state = \"queuing\"]"
 "charging taxis" 1.0 0 -13791810 true "plot count taxis with [state = \"available\"]" "plot count taxis with [state = \"charging\"]"
 "breakdown taxis" 1.0 0 -16777216 true "" "plot count taxis with [state = \"breakdown\"]"
+"roaming taxis" 1.0 0 -4079321 true "" "plot count taxis with [state = \"roaming\"]"
 
 SLIDER
 15
@@ -532,10 +621,10 @@ charging-completion-threshold
 HORIZONTAL
 
 MONITOR
-955
-17
-1262
-62
+1000
+16
+1307
+61
 Overall Average Battery Charge
 mean [battery] of taxis
 2
@@ -543,10 +632,10 @@ mean [battery] of taxis
 11
 
 MONITOR
-1069
-609
-1163
-654
+1090
+640
+1197
+685
 Breakdown
 count taxis with [state = \"breakdown\"]
 17
@@ -554,10 +643,10 @@ count taxis with [state = \"breakdown\"]
 11
 
 MONITOR
-955
-198
-1260
-243
+1001
+219
+1306
+264
 Overall Average Queue Length
 mean ([length current-queue] of areas)
 2
@@ -566,18 +655,18 @@ mean ([length current-queue] of areas)
 
 CHOOSER
 14
-395
+426
 705
-440
+471
 time-of-day
 time-of-day
 "None" "Morning Peak" "Evening Peak"
-0
+1
 
 SWITCH
 18
 58
-292
+156
 91
 labels?
 labels?
@@ -587,9 +676,9 @@ labels?
 
 MONITOR
 14
-443
+474
 169
-488
+519
 Number of Taxis (CBD)
 count taxis with [member? current-location morning-peak-areas]
 2
@@ -598,9 +687,9 @@ count taxis with [member? current-location morning-peak-areas]
 
 MONITOR
 169
-443
+474
 333
-488
+519
 Number of Taxis (Non-CBD)
 count taxis with [member? current-location evening-peak-areas]
 17
@@ -609,9 +698,9 @@ count taxis with [member? current-location evening-peak-areas]
 
 MONITOR
 340
-443
+474
 510
-488
+519
 Average Queue Length (CBD)
 mean ([length current-queue] of areas with [member? who morning-peak-areas])
 2
@@ -620,9 +709,9 @@ mean ([length current-queue] of areas with [member? who morning-peak-areas])
 
 MONITOR
 509
-443
+474
 705
-488
+519
 Average Queue Length (Non-CBD)
 mean ([length current-queue] of areas with [member? who evening-peak-areas])
 2
@@ -631,9 +720,9 @@ mean ([length current-queue] of areas with [member? who evening-peak-areas])
 
 PLOT
 14
-488
+519
 334
-698
+729
 Number of Taxis in CBD vs. Non-CBD
 NIL
 NIL
@@ -650,28 +739,28 @@ PENS
 
 PLOT
 340
-487
+518
 706
-699
+730
 Average Queue Length in CBD vs. Non-CBD
 NIL
 NIL
 0.0
-10.0
+2.0
 0.0
-10.0
+2.0
 true
 true
 "" ""
 PENS
-"CBD" 1.0 0 -955883 true "if (count taxis with [state = \"queuing\"] > 0) [plot mean ([length current-queue] of areas with [member? who morning-peak-areas])]" "if (count taxis with [state = \"queuing\"] > 0) [plot mean ([length current-queue] of areas with [member? who morning-peak-areas])]"
-"Non-CBD" 1.0 0 -14454117 true "if (count taxis with [state = \"queuing\"] > 0) [plot mean ([length current-queue] of areas with [member? who evening-peak-areas])]" "if (count taxis with [state = \"queuing\"] > 0) [plot mean ([length current-queue] of areas with [member? who evening-peak-areas])]"
+"CBD" 1.0 0 -955883 true "plot mean ([length current-queue] of areas with [member? who morning-peak-areas])" "plot mean ([length current-queue] of areas with [member? who morning-peak-areas])"
+"Non-CBD" 1.0 0 -14454117 true "plot mean ([length current-queue] of areas with [member? who evening-peak-areas])" "plot mean ([length current-queue] of areas with [member? who evening-peak-areas])"
 
 MONITOR
 710
-653
-790
-698
+684
+797
+729
 % Available
 count taxis with [state = \"available\"] / num-taxis * 100
 2
@@ -679,10 +768,10 @@ count taxis with [state = \"available\"] / num-taxis * 100
 11
 
 MONITOR
-789
-653
-879
-698
+797
+685
+893
+730
 % Hired
 count taxis with [state = \"hired\"] / num-taxis * 100
 2
@@ -690,10 +779,10 @@ count taxis with [state = \"hired\"] / num-taxis * 100
 11
 
 MONITOR
-878
-653
-972
-698
+893
+684
+987
+729
 % Queuing
 count taxis with [state = \"queuing\"] / num-taxis * 100
 2
@@ -701,10 +790,10 @@ count taxis with [state = \"queuing\"] / num-taxis * 100
 11
 
 MONITOR
-970
-653
-1070
-698
+987
+684
+1090
+729
 % Charging
 count taxis with [state = \"charging\"] / num-taxis * 100
 2
@@ -712,10 +801,10 @@ count taxis with [state = \"charging\"] / num-taxis * 100
 11
 
 MONITOR
-1069
-653
-1163
-698
+1090
+684
+1197
+729
 % Breakdown
 count taxis with [state = \"breakdown\"] / num-taxis * 100
 2
@@ -723,10 +812,10 @@ count taxis with [state = \"breakdown\"] / num-taxis * 100
 11
 
 PLOT
-955
-62
-1262
-192
+1000
+61
+1307
+213
 Overall Average Battery Charge Over Time
 NIL
 NIL
@@ -741,44 +830,70 @@ PENS
 "default" 1.0 0 -16777216 true "if not empty? [battery] of taxis [plot mean [battery] of taxis]" "if not empty? [battery] of taxis [plot mean [battery] of taxis]"
 
 PLOT
-955
-243
-1260
-379
+1001
+264
+1306
+414
 Overall Average Queue Length Over Time
 NIL
 NIL
 0.0
-10.0
+2.0
 0.0
-10.0
+2.0
 true
 false
 "" ""
 PENS
-"default" 1.0 0 -16777216 true "if (count taxis with [state = \"queuing\"] > 0) [plot mean ([length current-queue] of areas)]" "if (count taxis with [state = \"queuing\"] > 0) [plot mean ([length current-queue] of areas)]"
+"default" 1.0 0 -16777216 true "plot mean ([length current-queue] of areas)" "plot mean ([length current-queue] of areas)"
 
 MONITOR
-1162
-608
-1259
-653
+1197
+639
+1305
+684
 Roaming
-99999
+count taxis with [state = \"roaming\"]
 2
 1
 11
 
 MONITOR
-1162
-653
-1259
-698
+1197
+684
+1305
+729
 % Roaming
-99999
-17
+count taxis with [state = \"roaming\"] / num-taxis * 100
+2
 1
 11
+
+SLIDER
+15
+382
+289
+415
+max-acceptable-queue-length
+max-acceptable-queue-length
+0
+100
+25.0
+1
+1
+NIL
+HORIZONTAL
+
+SWITCH
+159
+58
+291
+91
+roaming?
+roaming?
+1
+1
+-1000
 
 @#$#@#$#@
 ## WHAT IS IT?
